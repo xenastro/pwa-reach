@@ -186,7 +186,8 @@ window.pwaReach.ready(function (R) {
     if (k === 'enable') {
       msg('Asking for permission…');
       R.enable().then(function (r) {
-        if (r.ok) { msg('Enabled. Sending a test…'); return R.test(true).then(testResult).then(function () { setTimeout(function () { location.reload(); }, 1500); }); }
+        // No automatic test: a tap on "Send me a test" right after would deliver two.
+        if (r.ok) { msg('Enabled ✓ Tap "Send me a test" to check it arrives.'); render(); return; }
         if (r.state === 'denied') { msg(''); R.help('denied'); }
         else msg(r.error || ('Not enabled (' + r.state + ').'));
         render();
