@@ -213,3 +213,10 @@ test("ui pieces render escaped HTML with valid inline scripts", async () => {
   expect(html).not.toContain("<b>x</b>");
   for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) expect(() => new Function(m[1]!)).not.toThrow();
 });
+
+test("client: subscribe is single-flight and every sheet accepts per-call texts", async () => {
+  const js = reach.clientScript();
+  expect(js).toContain("if (!ensuring) ensuring = ensureOnce(reason)");
+  expect(js).toContain("function tx(o)");
+  expect(js).toContain("help('ios-install', { signIn: o.signIn !== false, onClose: dismiss, text: o.text })");
+});

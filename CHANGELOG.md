@@ -6,4 +6,7 @@ First release, extracted from daftar's web push pilot (live since 2026-11-18):
 the WebCrypto sender, the push-only service worker (with the Android tap fix and
 receipt acks), the per-device delivery log and scorecard. Added Hono routes,
 Postgres and D1 stores, the permission/install banner, iPhone and in-app-browser
-guidance, install reporting, and the settings-page pieces.
+guidance, install reporting, and the settings-page pieces. Per-call text
+overrides (`offer({ text })`) for pages in another language. The client's
+subscribe step is single-flight: an Enable tap during the on-open check no
+longer creates two subscriptions (seen in a real Chrome + FCM end-to-end run).

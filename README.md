@@ -128,8 +128,11 @@ On every page load the client quietly re-checks this device's subscription
 (right key, still there) and re-sends it to the server, which records "app
 opened". It never prompts.
 
-Texts are English by default. Override any of them with `createReach({ text: { offerTitle: "…" } })`
-(`{app}` is replaced with `appName`), or per call with `offer({ title, body, enable, later })`.
+Texts are English by default. Override any of them for the whole app with
+`createReach({ text: { offerTitle: "…" } })` (`{app}` is replaced with
+`appName`), or per call: `offer({ text: { …any DEFAULT_TEXT key… } })`, which
+also applies to `offerInstall()` and `help()`. That's how a player page can be
+Arabic while the admin pages stay English.
 
 Styling: the sheet and the settings pieces read `--pr-bg`, `--pr-ink`,
 `--pr-accent`, `--pr-accent-ink`, `--pr-line`, `--pr-muted`, `--pr-good`,

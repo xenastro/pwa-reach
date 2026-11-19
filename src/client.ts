@@ -32,6 +32,7 @@ export interface ClientText {
   inAppTitle: string;
   inAppBody: string;
   inAppHow: string;
+  anApp: string;
   copyLink: string;
   copied: string;
   unsupportedTitle: string;
@@ -67,6 +68,7 @@ export const DEFAULT_TEXT: ClientText = {
   inAppTitle: "Open this in your browser",
   inAppBody: "This page is open inside {inapp}, which can't install apps or show notifications. Open it in {browser} instead.",
   inAppHow: "Tap ⋮ or ••• and choose “Open in browser”, or copy the link and paste it there.",
+  anApp: "an app",
   copyLink: "Copy link",
   copied: "Copied ✓",
   unsupportedTitle: "Not supported here",
@@ -196,7 +198,15 @@ async function subscription() {
   return reg ? reg.pushManager.getSubscription() : null;
 }
 // Get (or create) a subscription on the current key, then send it to the server.
-async function ensure(reason) {
+// Single-flight: the on-open check and an Enable tap must never subscribe in
+// parallel (two concurrent subscribe() calls can leave the server holding a
+// subscription the browser already replaced).
+var ensuring = null;
+function ensure(reason) {
+  if (!ensuring) ensuring = ensureOnce(reason).finally(function () { ensuring = null; });
+  return ensuring;
+}
+async function ensureOnce(reason) {
   if (!C.key) throw new Error('push is not configured on the server');
   var reg = await registration();
   var sub = await reg.pushManager.getSubscription();
@@ -300,7 +310,7 @@ function show(v) {
   css(); close();
   var root = el('div', 'pr-sheet');
   root.setAttribute('role', 'dialog'); root.setAttribute('aria-live', 'polite'); root.dir = 'auto';
-  var x = el('button', 'pr-x', '×'); x.type = 'button'; x.setAttribute('aria-label', T.close);
+  var x = el('button', 'pr-x', '×'); x.type = 'button'; x.setAttribute('aria-label', v.closeLabel || T.close);
   x.onclick = function () { var f = sheetClose; close(); if (f) f(); };
   root.appendChild(x);
   if (v.title) root.appendChild(el('div', 'pr-title', v.title));
@@ -330,95 +340,101 @@ function copy(t) {
   if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(t).catch(fallback);
   return fallback();
 }
-function deniedText() {
-  if (ios) return T.deniedIos;
-  if (android) return standalone() ? T.deniedAndroidApp : T.deniedAndroid;
-  return T.deniedDesktop;
+function deniedText(X) {
+  if (ios) return X.deniedIos;
+  if (android) return standalone() ? X.deniedAndroidApp : X.deniedAndroid;
+  return X.deniedDesktop;
 }
+// Texts for one call: the defaults, overridden by o.text (e.g. another language).
+function tx(o) { var X = {}, k; for (k in T) X[k] = T[k]; if (o && o.text) for (k in o.text) X[k] = o.text[k]; return X; }
 // Explain a state: denied | ios-install | ios-steps | in-app | unsupported.
 function help(state, o) {
   o = o || {};
-  var done = { label: T.close, run: function () { var f = sheetClose; close(); if (f) f(); } };
-  if (state === 'denied') return show({ title: fmt(T.deniedTitle), body: fmt(deniedText()), actions: [done], onClose: o.onClose });
+  var X = tx(o);
+  var done = { label: X.close, run: function () { var f = sheetClose; close(); if (f) f(); } };
+  if (state === 'denied') return show({ title: fmt(X.deniedTitle), body: fmt(deniedText(X)), actions: [done], onClose: o.onClose });
   if (state === 'ios-install' || state === 'ios-steps') {
     return show({
-      title: fmt(T.iosTitle),
-      body: o.forPush === false ? null : fmt(T.iosIntro),
-      steps: [fmt(T.iosStep1), fmt(T.iosStep2), fmt(o.signIn ? T.iosStep3SignIn : T.iosStep3)],
-      note: fmt(T.iosNoShare),
+      title: fmt(X.iosTitle),
+      body: o.forPush === false ? null : fmt(X.iosIntro),
+      steps: [fmt(X.iosStep1), fmt(X.iosStep2), fmt(o.signIn ? X.iosStep3SignIn : X.iosStep3)],
+      note: fmt(X.iosNoShare),
       actions: [done], onClose: o.onClose
     });
   }
   if (state === 'in-app') {
     return show({
-      title: fmt(T.inAppTitle),
-      body: fmt(T.inAppBody, { inapp: inApp() || 'an app', browser: ios ? 'Safari' : 'Chrome' }),
-      note: fmt(T.inAppHow),
-      actions: [{ label: T.copyLink, primary: true, run: function (b) { copy(location.href).then(function () { b.textContent = T.copied; }); } }, done],
+      title: fmt(X.inAppTitle),
+      body: fmt(X.inAppBody, { inapp: (inApp() === 'an app' ? X.anApp : inApp()) || X.anApp, browser: ios ? 'Safari' : 'Chrome' }),
+      note: fmt(X.inAppHow),
+      actions: [{ label: X.copyLink, primary: true, run: function (b) { copy(location.href).then(function () { b.textContent = X.copied; }); } }, done],
       onClose: o.onClose
     });
   }
-  if (state === 'unsupported') return show({ title: fmt(T.unsupportedTitle), body: fmt(T.unsupportedBody), actions: [done], onClose: o.onClose });
+  if (state === 'unsupported') return show({ title: fmt(X.unsupportedTitle), body: fmt(X.unsupportedBody), actions: [done], onClose: o.onClose });
   return null;
 }
 
 // Offer notifications at a moment the project picks. Shows nothing when
 // they're already on, unsupported, blocked (unless force) or snoozed.
-// o: { id, title, body, enable, later, snoozeDays, force, signIn, onDone(result) }
+// o: { id, title, body, enable, later, snoozeDays, force, signIn, text, onDone(result) }
+// o.text overrides any DEFAULT_TEXT key for this call (e.g. Arabic on a player page).
 async function offer(o) {
   o = o || {};
+  var X = tx(o);
   var id = 'push:' + (o.id || 'default');
   var st = await pushState();
   if (st === 'on' || (st === 'unsupported' && !o.force)) return st;
   if (!o.force && snoozed(id)) return 'snoozed';
   function dismiss() { snooze(id, o.snoozeDays); close(); if (o.onDone) o.onDone('later'); }
-  if (st === 'denied') { if (o.force) help('denied'); return st; }
-  if (st === 'unsupported') { help('unsupported'); return st; }
-  if (st === 'in-app') { help('in-app', { onClose: dismiss }); return st; }
-  if (st === 'ios-install') { help('ios-install', { signIn: o.signIn !== false, onClose: dismiss }); return st; }
+  if (st === 'denied') { if (o.force) help('denied', { text: o.text }); return st; }
+  if (st === 'unsupported') { help('unsupported', { text: o.text }); return st; }
+  if (st === 'in-app') { help('in-app', { onClose: dismiss, text: o.text }); return st; }
+  if (st === 'ios-install') { help('ios-install', { signIn: o.signIn !== false, onClose: dismiss, text: o.text }); return st; }
   show({
-    title: o.title || fmt(T.offerTitle),
-    body: o.body || fmt(T.offerBody),
+    title: o.title || fmt(X.offerTitle),
+    body: o.body || fmt(X.offerBody),
     actions: [
-      { label: o.enable || T.enable, primary: true, run: function (b, msg) {
+      { label: o.enable || X.enable, primary: true, run: function (b, msg) {
         b.disabled = true; msg.textContent = '';
         enable().then(function (r) {
           if (r.ok) {
-            show({ title: fmt(T.enabledTitle), body: fmt(T.enabledBody) });
+            show({ title: fmt(X.enabledTitle), body: fmt(X.enabledBody) });
             setTimeout(close, 2500);
             if (o.onDone) o.onDone('on');
           } else if (r.state === 'denied') {
-            help('denied'); if (o.onDone) o.onDone('denied');
+            help('denied', { text: o.text }); if (o.onDone) o.onDone('denied');
           } else {
-            b.disabled = false; msg.textContent = fmt(T.failed, { error: r.error || r.state });
+            b.disabled = false; msg.textContent = fmt(X.failed, { error: r.error || r.state });
           }
         });
       } },
-      { label: o.later || T.later, run: dismiss }
+      { label: o.later || X.later, run: dismiss }
     ],
     onClose: dismiss
   });
   return st;
 }
 
-// Offer installing. o: { id, title, body, install, later, snoozeDays, force, signIn, onDone(result) }
+// Offer installing. o: { id, title, body, install, later, snoozeDays, force, signIn, text, onDone(result) }
 async function offerInstall(o) {
   o = o || {};
+  var X = tx(o);
   var id = 'install:' + (o.id || 'default');
   var st = installState();
   if (st === 'installed' || st === 'unavailable') return st;
   if (!o.force && snoozed(id)) return 'snoozed';
   function dismiss() { snooze(id, o.snoozeDays); close(); if (o.onDone) o.onDone('later'); }
-  if (st === 'in-app') { help('in-app', { onClose: dismiss }); return st; }
-  if (st === 'ios-steps') { help('ios-steps', { forPush: false, signIn: !!o.signIn, onClose: dismiss }); return st; }
+  if (st === 'in-app') { help('in-app', { onClose: dismiss, text: o.text }); return st; }
+  if (st === 'ios-steps') { help('ios-steps', { forPush: false, signIn: !!o.signIn, onClose: dismiss, text: o.text }); return st; }
   show({
-    title: o.title || fmt(T.installTitle),
-    body: o.body || fmt(T.installBody),
+    title: o.title || fmt(X.installTitle),
+    body: o.body || fmt(X.installBody),
     actions: [
-      { label: o.install || T.install, primary: true, run: function () {
+      { label: o.install || X.install, primary: true, run: function () {
         install().then(function (r) { close(); if (r === 'dismissed') snooze(id, o.snoozeDays); if (o.onDone) o.onDone(r); });
       } },
-      { label: o.later || T.later, run: dismiss }
+      { label: o.later || X.later, run: dismiss }
     ],
     onClose: dismiss
   });
