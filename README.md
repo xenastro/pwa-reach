@@ -1,5 +1,7 @@
 # @xenastro/pwa-reach
 
+[![npm](https://img.shields.io/npm/v/@xenastro/pwa-reach)](https://www.npmjs.com/package/@xenastro/pwa-reach)
+
 Web push and install prompts for small, server-rendered PWAs. Built for apps
 like Bun + Hono with HTML from the server and no build step, on Railway or
 Cloudflare Workers.
