@@ -1,0 +1,78 @@
+{
+  "name": "@xenastro/pwa-reach",
+  "version": "0.1.0",
+  "description": "Web push + install prompts for small server-rendered PWAs: dependency-free sender, Hono routes, Postgres and Cloudflare D1 stores, a push-only service worker, and a polite permission banner.",
+  "keywords": [
+    "web-push",
+    "push-notifications",
+    "pwa",
+    "vapid",
+    "service-worker",
+    "install-prompt",
+    "hono",
+    "bun",
+    "cloudflare-workers",
+    "d1"
+  ],
+  "license": "MIT",
+  "author": "xenastro",
+  "homepage": "https://github.com/xenastro/pwa-reach#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xenastro/pwa-reach.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xenastro/pwa-reach/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./hono": {
+      "types": "./dist/hono.d.ts",
+      "default": "./dist/hono.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "pwa-reach": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+  },
+  "peerDependencies": {
+    "hono": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/web-push": "^3.6.4",
+    "hono": "^4.13.19",
+    "typescript": "^7.0.2",
+    "web-push": "^4.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
