@@ -1,6 +1,6 @@
 {
   "name": "@xenastro/pwa-reach",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Web push + install prompts for small server-rendered PWAs: dependency-free sender, Hono routes, Postgres and Cloudflare D1 stores, a push-only service worker, and a polite permission banner.",
   "keywords": [
     "web-push",

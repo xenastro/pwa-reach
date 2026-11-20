@@ -1,5 +1,7 @@
 // Browser side, served as one script at {basePath}/client.js plus a tiny
-// inline stub from headTags(). Plain ES2017, no build step.
+// stub: inline from headTags(), or as a file at {basePath}/stub.js for pages
+// under a strict CSP (no inline scripts) and single-page apps. Plain ES2017,
+// no build step.
 //
 // The stub defines window.pwaReach.ready(fn) BEFORE anything else runs, so a
 // page's own inline script can never race the client loading (the daftar
@@ -40,6 +42,10 @@ export interface ClientText {
   installTitle: string;
   installBody: string;
   install: string;
+  manualTitle: string;
+  manualStep1: string;
+  manualStep2: string;
+  manualStep3: string;
   testTitle: string;
   testBody: string;
   failed: string;
@@ -76,6 +82,10 @@ export const DEFAULT_TEXT: ClientText = {
   installTitle: "Install {app}",
   installBody: "Add {app} to your home screen. It opens like an app.",
   install: "Install",
+  manualTitle: "Install {app}",
+  manualStep1: "Open this browser's menu (⋮ or ≡).",
+  manualStep2: "Choose “Install app” or “Add to Home screen”.",
+  manualStep3: "Open {app} from your home screen.",
   testTitle: "{app} test notification",
   testBody: "Sent {time}. If you can read this, notifications work on this device.",
   failed: "Something went wrong: {error}",
@@ -270,18 +280,23 @@ async function test(endpoint) {
 var bip = stub.bip || null, justInstalled = false;
 window.addEventListener('beforeinstallprompt', function (e) { if (stub.capture !== false) e.preventDefault(); bip = e; emit(); });
 window.addEventListener('appinstalled', function () { bip = null; justInstalled = true; report(true); emit(); });
-// installed | prompt | ios-steps | in-app | unavailable
+// installed | prompt | ios-steps | manual | in-app | unavailable
+// manual: Android without an install prompt (Samsung Internet, Firefox, or
+// Chrome before it decides the site is installable): the browser menu's steps.
 function installState() {
   if (justInstalled || standalone()) return 'installed';
   if (inApp()) return 'in-app';
   if (ios) return 'ios-steps';
   if (bip) return 'prompt';
+  if (android) return 'manual';
   return 'unavailable';
 }
-async function install() {
+// o: { text } for the help sheets (iPhone steps, the menu steps, in-app).
+async function install(o) {
   var st = installState();
-  if (st === 'ios-steps') { help('ios-steps', { forPush: false }); return st; }
-  if (st === 'in-app') { help('in-app'); return st; }
+  if (st === 'ios-steps') { help('ios-steps', { forPush: false, text: o && o.text }); return st; }
+  if (st === 'manual') { help('manual', { text: o && o.text }); return st; }
+  if (st === 'in-app') { help('in-app', { text: o && o.text }); return st; }
   if (st !== 'prompt') return st;
   var e = bip; bip = null;
   try {
@@ -347,7 +362,7 @@ function deniedText(X) {
 }
 // Texts for one call: the defaults, overridden by o.text (e.g. another language).
 function tx(o) { var X = {}, k; for (k in T) X[k] = T[k]; if (o && o.text) for (k in o.text) X[k] = o.text[k]; return X; }
-// Explain a state: denied | ios-install | ios-steps | in-app | unsupported.
+// Explain a state: denied | ios-install | ios-steps | manual | in-app | unsupported.
 function help(state, o) {
   o = o || {};
   var X = tx(o);
@@ -359,6 +374,13 @@ function help(state, o) {
       body: o.forPush === false ? null : fmt(X.iosIntro),
       steps: [fmt(X.iosStep1), fmt(X.iosStep2), fmt(o.signIn ? X.iosStep3SignIn : X.iosStep3)],
       note: fmt(X.iosNoShare),
+      actions: [done], onClose: o.onClose
+    });
+  }
+  if (state === 'manual') {
+    return show({
+      title: fmt(X.manualTitle),
+      steps: [fmt(X.manualStep1), fmt(X.manualStep2), fmt(X.manualStep3)],
       actions: [done], onClose: o.onClose
     });
   }
@@ -427,6 +449,7 @@ async function offerInstall(o) {
   function dismiss() { snooze(id, o.snoozeDays); close(); if (o.onDone) o.onDone('later'); }
   if (st === 'in-app') { help('in-app', { onClose: dismiss, text: o.text }); return st; }
   if (st === 'ios-steps') { help('ios-steps', { forPush: false, signIn: !!o.signIn, onClose: dismiss, text: o.text }); return st; }
+  if (st === 'manual') { help('manual', { onClose: dismiss, text: o.text }); return st; }
   show({
     title: o.title || fmt(X.installTitle),
     body: o.body || fmt(X.installBody),
@@ -449,7 +472,7 @@ function rid() {
 function report(installedNow) {
   if (!C.report) return;
   var mode = standalone() ? 'standalone' : 'browser';
-  var key = mode + '@' + new Date().toISOString().slice(0, 10) + (stub.signedIn ? '+u' : '');
+  var key = mode + '@' + new Date().toISOString().slice(0, 10) + (signedIn ? '+u' : '');
   if (!installedNow && lsGet('reported') === key) return;
   lsSet('reported', key);
   var id = lsGet('device');
@@ -467,22 +490,64 @@ if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
   navigator.serviceWorker.controller.postMessage({ type: 'pwa-reach-pending', path: location.pathname });
 }
 
-// ── On every open: re-check and re-send this device's subscription. Never prompts.
+// ── A notification tap: tell the server (pages it doesn't render, e.g. a
+//    single-page app's static files, never pass its ?via=push middleware),
+//    then take the tracking parameters out of the address bar. ──────────────
+(function () {
+  try {
+    var u = new URL(location.href);
+    if (u.searchParams.get('via') !== 'push') return;
+    var d = u.searchParams.get('d');
+    u.searchParams.delete('via'); u.searchParams.delete('d');
+    if (window.history && history.replaceState) history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+    if (d) post('/opened/' + encodeURIComponent(d), {}).catch(noop);
+  } catch (e) {}
+})();
+
+// ── Signed in? true / false from headTags(); null = the page will say, with
+//    setSignedIn() (stub.js, single-page apps where signing in reloads nothing).
+var signedIn = stub.signedIn;
+function canSync() { return pushSupported() && !!C.key && Notification.permission === 'granted' && !isOff(); }
 var synced = Promise.resolve(null);
-if (pushSupported() && C.key && stub.signedIn !== false && Notification.permission === 'granted' && !isOff()) {
-  synced = ensure('open').catch(function (e) { console.warn('[pwa-reach] on-open check failed:', e && e.message || e); return null; })
+function sync(reason) {
+  synced = ensure(reason).catch(function (e) { console.warn('[pwa-reach] subscription check failed:', e && e.message || e); return null; })
     .then(function (r) { emit(); return r; });
+  return synced;
 }
+// On every open: re-check and re-send this device's subscription. Never prompts.
+if ((signedIn === true || signedIn === undefined) && canSync()) sync('open');
 report(false);
+
+// The page signed someone in or out without reloading.
+function setSignedIn(v) {
+  var was = signedIn;
+  signedIn = !!v; api.signedIn = signedIn;
+  if (signedIn && was !== true) {
+    if (canSync()) sync('signin');
+    report(false);
+  }
+  emit();
+}
+// Before signing out: this device stops receiving that account's notifications
+// (a phone the family shares must not keep getting the last person's). The
+// permission stays, so the next person turns them on with one tap and no prompt.
+async function forget() {
+  var s = await subscription().catch(function () { return null; });
+  if (s) {
+    await post('/unsubscribe', { endpoint: s.endpoint }).catch(noop);
+    await s.unsubscribe().catch(noop);
+  }
+  setSignedIn(false);
+}
 
 var api = {
   version: 1,
-  signedIn: stub.signedIn,
+  signedIn: signedIn,
   env: function () {
     return { ios: ios, android: android, platform: platform(), standalone: standalone(), inApp: inApp(), pushSupported: pushSupported() };
   },
   pushState: pushState, enable: enable, disable: disable, subscription: subscription, setPrefs: setPrefs, test: test, isOff: isOff,
-  installState: installState, install: install,
+  installState: installState, install: install, setSignedIn: setSignedIn, forget: forget,
   offer: offer, offerInstall: offerInstall, help: help, close: close,
   snooze: snooze, snoozed: snoozed, unsnooze: unsnooze,
   synced: function () { return synced; },
@@ -493,6 +558,22 @@ window.pwaReach = api;
 (stub.q || []).forEach(api.ready);
 })();
 `;
+}
+
+/**
+ * The stub as a file, served at {basePath}/stub.js: a page under a strict CSP
+ * (no inline scripts) loads it with <script src="…/stub.js" defer> before its
+ * own scripts, and the stub loads the client. Signed-in state starts unknown
+ * (null): the page calls pwaReach.setSignedIn(true | false) once it knows, at
+ * any time (before the client has loaded, the stub keeps the value).
+ */
+export function stubScript(o: { clientUrl: string; captureInstallPrompt: boolean }): string {
+  return (
+    `(function(w,d){var r=w.pwaReach=w.pwaReach||{q:[]};r.q=r.q||[];r.ready=r.ready||function(f){r.q.push(f)};` +
+    `if(r.signedIn===undefined)r.signedIn=null;r.setSignedIn=r.setSignedIn||function(v){r.signedIn=!!v};r.capture=${o.captureInstallPrompt};` +
+    `w.addEventListener('beforeinstallprompt',function(e){if(r.capture)e.preventDefault();r.bip=e;});` +
+    `var s=d.createElement('script');s.src=${JSON.stringify(o.clientUrl)};s.async=true;d.head.appendChild(s);})(window,document);\n`
+  );
 }
 
 /** Inline stub + deferred client: goes in every page's <head>. */

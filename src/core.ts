@@ -4,7 +4,7 @@
 
 import { sendWebPush, type VapidKeys } from "./webpush.js";
 import type { Platform, ReachStore, Subscription, EventLog, InstallSummary } from "./types.js";
-import { clientScript, headSnippet, DEFAULT_TEXT, type ClientText } from "./client.js";
+import { clientScript, headSnippet, stubScript, DEFAULT_TEXT, type ClientText } from "./client.js";
 import { serviceWorkerScript, pushWorkerScript } from "./sw.js";
 
 export interface ReachConfig {
@@ -109,6 +109,8 @@ export interface Reach {
   clientScript(): string;
   /** Put in every page's <head>: a tiny inline stub + the deferred client script. */
   headTags(opts?: { signedIn?: boolean }): string;
+  /** The stub as a file (served at {basePath}/stub.js), for a strict CSP or a single-page app. */
+  stubScript(): string;
 }
 
 export function platformOf(ua: string | null | undefined): Platform {
@@ -287,6 +289,7 @@ export function createReach(cfg: ReachConfig): Reach {
     installReport: cfg.installReport ?? true,
   });
   const clientUrl = `${basePath}/client.js?v=${hash(clientSource)}`;
+  const stubSource = stubScript({ clientUrl, captureInstallPrompt: cfg.captureInstallPrompt ?? true });
 
   async function fanout(m: ReachMessage, targets: Subscription[], audience: string[]): Promise<FanoutResult> {
     const out: FanoutResult = { eventId: null, devices: targets.length, accepted: 0, results: [] };
@@ -372,6 +375,7 @@ export function createReach(cfg: ReachConfig): Reach {
     serviceWorker: () => swSource,
     pushWorker: () => pushSource,
     clientScript: () => clientSource,
+    stubScript: () => stubSource,
     headTags: (o = {}) =>
       headSnippet({ clientUrl, signedIn: o.signedIn, captureInstallPrompt: cfg.captureInstallPrompt ?? true }),
   };

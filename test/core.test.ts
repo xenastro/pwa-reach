@@ -220,3 +220,44 @@ test("client: subscribe is single-flight and every sheet accepts per-call texts"
   expect(js).toContain("function tx(o)");
   expect(js).toContain("help('ios-install', { signIn: o.signIn !== false, onClose: dismiss, text: o.text })");
 });
+
+test("stub.js: served with an ETag (304 when unchanged), loads the versioned client", async () => {
+  const r = await app.request("/reach/stub.js");
+  expect(r.status).toBe(200);
+  const etag = r.headers.get("etag")!;
+  expect(etag).toMatch(/^"\w+"$/);
+  expect(r.headers.get("cache-control")).toBe("no-cache");
+  const js = await r.text();
+  expect(() => new Function(js)).not.toThrow();
+  const clientSrc = /src="([^"]+)"/.exec(reach.headTags())![1]!;
+  expect(js).toContain(JSON.stringify(clientSrc));
+  const again = await app.request("/reach/stub.js", { headers: { "if-none-match": etag } });
+  expect(again.status).toBe(304);
+  expect(await again.text()).toBe("");
+});
+
+test("opened/:id: a tap reported by the page stamps the delivery once, without a session", async () => {
+  await post("/reach/subscribe", { subscription: sub(1) });
+  await reach.send({ title: "hello", path: "/e/1" }, ["user:1"]);
+  const id = (await d1.prepare("select id from reach_delivery").first<{ id: string }>())!.id;
+  who = null;
+  expect((await post(`/reach/opened/${id}`, {})).status).toBe(200);
+  const first = await d1.prepare("select opened_at, received_at from reach_delivery").first<{ opened_at: string; received_at: string }>();
+  expect(first!.opened_at).toBeTruthy();
+  expect(first!.received_at).toBeTruthy();
+  await post(`/reach/opened/${id}`, {});
+  expect((await d1.prepare("select opened_at from reach_delivery").first<{ opened_at: string }>())!.opened_at).toBe(first!.opened_at);
+  expect((await post("/reach/opened/not-a-real-id-0000000", {})).status).toBe(200); // silent no-op
+});
+
+test("prefix: routes mounted on an app with its own basePath keep the browser's full paths", async () => {
+  const r2 = createReach({ store: d1Store(d1), vapid, appUrl: "https://app.example.com", appName: "Trees", basePath: "/api/reach", swPath: "/api/reach/sw.js", fetch: fakeFetch });
+  const api = new Hono().basePath("/api");
+  mountReach(api, { reach: r2, getOwner: () => "user:9", prefix: "/api" });
+  expect((await api.request("/api/reach/sw.js")).status).toBe(200);
+  expect((await api.request("/api/reach/stub.js")).status).toBe(200);
+  const s = await api.request("/api/reach/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subscription: sub(5) }) });
+  expect((await s.json()).ok).toBe(true);
+  expect((await api.request("/api/api/reach/sw.js")).status).toBe(404);
+  expect(() => mountReach(new Hono().basePath("/v1"), { reach: r2, getOwner: () => null, prefix: "/v1" })).toThrow(/outside the app's prefix/);
+});

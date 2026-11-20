@@ -4,6 +4,8 @@
 //
 //   GET  {swPath}                    the service worker (default /sw.js)
 //   GET  {base}/client.js            page script (cache-busted by headTags)
+//   GET  {base}/stub.js              the stub as a file (strict CSP, single-page apps); loads the client
+//   POST {base}/opened/:id           notification tap, reported by the page itself
 //   GET  {base}/sw-push.js           push handlers only, for importScripts
 //   POST {base}/ack/:id              service-worker receipt (id = random delivery token)
 //   POST {base}/renew                pushsubscriptionchange (authorised by the old endpoint)
@@ -28,6 +30,12 @@ export interface MountOptions {
   /** Only needed with a factory: must match the factory's config. Defaults "/reach" and "/sw.js". */
   basePath?: string;
   swPath?: string;
+  /**
+   * The Hono app's own basePath, when it has one (e.g. "/api" for
+   * `new Hono().basePath("/api")`): routes are registered without it, so
+   * basePath and swPath stay the full paths the browser uses.
+   */
+  prefix?: string;
 }
 
 const PLATFORMS: Platform[] = ["android", "ios", "desktop", "other"];
@@ -56,6 +64,12 @@ async function body(c: Context): Promise<Record<string, unknown>> {
   }
 }
 
+function etagOf(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36) + s.length.toString(36);
+}
+
 /** Run after the response. Uses waitUntil on Workers; elsewhere just lets it run. */
 export function background(c: Context, p: Promise<unknown>): void {
   const safe = p.catch((e) => console.error("[pwa-reach]", e instanceof Error ? e.message : e));
@@ -72,6 +86,13 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
   const base = probe?.config.basePath ?? (opts.basePath ?? "/reach").replace(/\/+$/, "");
   const swPath = probe?.config.swPath ?? opts.swPath ?? "/sw.js";
   const owner = async (c: Context) => (await opts.getOwner(c)) || null;
+  const prefix = (opts.prefix ?? "").replace(/\/+$/, "");
+  const local = (p: string) => {
+    if (!prefix) return p;
+    if (!p.startsWith(prefix + "/")) throw new Error(`[pwa-reach] ${p} is outside the app's prefix ${prefix}`);
+    return p.slice(prefix.length);
+  };
+  const B = local(base);
   const signedOut = (c: Context) => c.json({ ok: false, error: "signed out" }, 401);
 
   app.use("*", async (c, next) => {
@@ -82,32 +103,47 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return next();
   });
 
-  app.get(swPath, (c) => {
+  app.get(local(swPath), (c) => {
     c.header("content-type", "text/javascript; charset=utf-8");
     c.header("cache-control", "no-cache"); // always revalidate: worker updates land on next open
     c.header("service-worker-allowed", "/");
     return c.body(get(c).serviceWorker());
   });
 
-  app.get(`${base}/client.js`, (c) => {
+  app.get(`${B}/client.js`, (c) => {
     c.header("content-type", "text/javascript; charset=utf-8");
     // headTags() adds ?v=<hash of the script>, so a changed script gets a new URL.
     c.header("cache-control", c.req.query("v") ? "public, max-age=31536000, immutable" : "no-cache");
     return c.body(get(c).clientScript());
   });
 
-  app.get(`${base}/sw-push.js`, (c) => {
+  app.get(`${B}/stub.js`, (c) => {
+    const src = get(c).stubScript();
+    const etag = `"${etagOf(src)}"`;
+    c.header("cache-control", "no-cache"); // tiny; revalidated so a new client version is picked up at once
+    c.header("etag", etag);
+    if (c.req.header("if-none-match") === etag) return c.body(null, 304);
+    c.header("content-type", "text/javascript; charset=utf-8");
+    return c.body(src);
+  });
+
+  app.post(`${B}/opened/:id`, async (c) => {
+    await get(c).store.markOpened(c.req.param("id")!).catch((e) => console.error("[pwa-reach] opened failed:", e));
+    return c.json({ ok: true });
+  });
+
+  app.get(`${B}/sw-push.js`, (c) => {
     c.header("content-type", "text/javascript; charset=utf-8");
     c.header("cache-control", "no-cache");
     return c.body(get(c).pushWorker());
   });
 
-  app.post(`${base}/ack/:id`, async (c) => {
+  app.post(`${B}/ack/:id`, async (c) => {
     await get(c).store.markReceived(c.req.param("id")!).catch((e) => console.error("[pwa-reach] ack failed:", e));
     return c.json({ ok: true });
   });
 
-  app.post(`${base}/renew`, async (c) => {
+  app.post(`${B}/renew`, async (c) => {
     const b = await body(c);
     const sub = parseSubscription(b.subscription);
     const old = typeof b.oldEndpoint === "string" ? b.oldEndpoint : null;
@@ -116,7 +152,7 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return c.json({ ok }, ok ? 200 : 404);
   });
 
-  app.post(`${base}/install`, async (c) => {
+  app.post(`${B}/install`, async (c) => {
     const b = await body(c);
     const deviceId = typeof b.deviceId === "string" && /^[a-f0-9]{32}$/.test(b.deviceId) ? b.deviceId : null;
     if (!deviceId) return c.json({ ok: false }, 400);
@@ -135,7 +171,7 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return c.json({ ok: true });
   });
 
-  app.post(`${base}/subscribe`, async (c) => {
+  app.post(`${B}/subscribe`, async (c) => {
     const r = get(c);
     const who = await owner(c);
     if (!who) return signedOut(c);
@@ -149,7 +185,7 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return c.json({ ok: true, id: row.id, prefs: row.prefs });
   });
 
-  app.post(`${base}/unsubscribe`, async (c) => {
+  app.post(`${B}/unsubscribe`, async (c) => {
     const who = await owner(c);
     if (!who) return signedOut(c);
     const b = await body(c);
@@ -157,7 +193,7 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return c.json({ ok: true });
   });
 
-  app.post(`${base}/prefs`, async (c) => {
+  app.post(`${B}/prefs`, async (c) => {
     const who = await owner(c);
     if (!who) return signedOut(c);
     const b = await body(c);
@@ -167,7 +203,7 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return c.json({ ok }, ok ? 200 : 404);
   });
 
-  app.post(`${base}/test`, async (c) => {
+  app.post(`${B}/test`, async (c) => {
     const r = get(c);
     const who = await owner(c);
     if (!who) return signedOut(c);
@@ -178,7 +214,7 @@ export function mountReach(app: Hono<any, any, any>, opts: MountOptions): void {
     return c.json({ ok: res.accepted > 0, ...res });
   });
 
-  app.post(`${base}/devices/:id/delete`, async (c) => {
+  app.post(`${B}/devices/:id/delete`, async (c) => {
     const who = await owner(c);
     if (!who) return signedOut(c);
     const id = Number(c.req.param("id"));

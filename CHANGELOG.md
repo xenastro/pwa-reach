@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0 (2026-11-20)
+
+For single-page apps and pages under a strict CSP (first used by the radaideh
+family tree, on Cloudflare Workers + D1):
+
+- `GET {base}/stub.js` (`reach.stubScript()`): the stub as a file, since
+  `script-src 'self'` blocks the inline one. It loads the versioned client and
+  is revalidated with an ETag.
+- `setSignedIn(bool)` for apps that sign in without reloading (the stub file
+  starts "unknown" and waits for it), and `forget()` before signing out, so a
+  shared phone stops getting the previous account's notifications.
+- A notification tap is reported by the page itself (`POST {base}/opened/:id`)
+  and the `via`/`d` parameters are removed from the address bar: pages served
+  as static files never passed the server's `?via=push` middleware.
+- Install state `manual`: Android without an install prompt (Samsung Internet,
+  Firefox, Chrome before it decides) now gets the browser menu's steps instead
+  of nothing. New texts `manualTitle`, `manualStep1..3`. `install({ text })`.
+- `mountReach({ prefix })` for a Hono app with its own `basePath`.
+- Tests for the page script.
+
 ## 0.1.1 (2026-11-19)
 
 - `deviceCard`: enabling no longer sends a test notification by itself. Tapping

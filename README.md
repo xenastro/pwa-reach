@@ -93,6 +93,36 @@ c.executionCtx.waitUntil(reachFor(c.env).send(message, owners));
 Create the tables with `await store.migrate()` or by copying `d1Schema` into a
 wrangler migration.
 
+## Single-page apps and a strict CSP
+
+`headTags()` puts an inline script in the page, which a `script-src 'self'`
+policy blocks, and a single-page app signs people in and out without
+reloading. For those, load the stub as a file instead (it loads the client):
+
+```html
+<script src="/api/reach/stub.js" defer></script>  <!-- before the app's own scripts -->
+```
+
+```ts
+// The app's routes live under /api: give the full paths, and the Hono app's own basePath as `prefix`.
+const reachFor = (env: Env) => createReach({ …, basePath: "/api/reach", swPath: "/api/reach/sw.js" });
+mountReach(api, { reach: (c) => reachFor(c.env), getOwner, basePath: "/api/reach", swPath: "/api/reach/sw.js", prefix: "/api" });
+```
+
+Then tell it who is signed in, and forget the device before signing out:
+
+```ts
+window.pwaReach.setSignedIn(!!me);         // any time, even before the client has loaded
+await window.pwaReach.forget?.();          // before the sign-out request: the next person on this phone
+                                           // doesn't get the last one's notifications
+```
+
+`stub.js` is revalidated on every load (an ETag, so usually a 304) and points
+at the current, immutably cached `client.js`. A notification tap on a page the
+server doesn't render (static files) is reported by the page itself
+(`POST {base}/opened/:id`), and the tracking parameters are taken out of the
+address bar.
+
 ## Asking for permission
 
 Never prompt on page load. Chrome switches to a quieter prompt for sites that
@@ -118,12 +148,14 @@ nothing while snoozed. Otherwise it shows the right sheet for the device:
 | `denied` | how to unblock, per platform (only with `force: true`, e.g. on a settings page) |
 
 `pwaReach.offerInstall({ ... })` does the same for installing: Android's
-install prompt, iPhone steps, or the in-app message.
+install prompt, iPhone steps, the browser menu's steps on Android when there is
+no prompt (Samsung Internet, Firefox, or Chrome before it decides the site is
+installable), or the in-app message.
 
 The full page API: `pushState()`, `enable()` (call it from a tap), `disable()`,
 `subscription()`, `setPrefs(text)`, `test(true | endpoint)`, `installState()`,
-`install()`, `offer()`, `offerInstall()`, `help(state)`, `snooze(id, days)`,
-`unsnooze(id)`, `env()`, `on(fn)`, `synced()`. Use `ready(fn)` so your script
+`install({ text })`, `offer()`, `offerInstall()`, `help(state)`, `snooze(id, days)`,
+`unsnooze(id)`, `env()`, `on(fn)`, `synced()`, `setSignedIn(bool)`, `forget()`. Use `ready(fn)` so your script
 can't run before the client has loaded.
 
 On every page load the client quietly re-checks this device's subscription
