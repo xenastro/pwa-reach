@@ -1,0 +1,29 @@
+# Publishes to npm when a version tag (v0.2.0, ...) is pushed. No npm token anywhere: npm trusts
+# this workflow through GitHub's OIDC (npmjs.com → the package → Settings → Trusted Publisher),
+# and adds a provenance statement saying which commit and workflow built the release.
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token npm exchanges for a one-time publish credential
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1 # trusted publishing needs npm 11.5.1 or later
+      - run: bun install --frozen-lockfile
+      - name: The tag matches package.json
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      # prepublishOnly type-checks, runs the tests and builds before anything is uploaded
+      - run: npm publish
